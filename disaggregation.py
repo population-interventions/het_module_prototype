@@ -6,134 +6,6 @@ from itertools import chain
 import pdb, traceback, sys
 
 
-def disaggregate_cohort_demography(cohort_data):
-    
-    #Used for testing a sample of cohorts
-    cohort_end = cohort_data['cohort'].max() + 1
-    #cohort_end = 3
-
-    #assume each cohort has same number of subpops
-    sub_pops = cohort_data.iloc[0]['subPops']
-
-    output_cols = ['cohort', 'age', 'sex', 'year',
-                   'mortality_agg','prev_alive_agg', 'prev_dead_agg', 
-                   'alive_agg', 'dead_agg', 'PY_agg', 'YLD_agg', 'HALY_agg',
-                   'sub_pops']
-
-    sub_pop_cols = list(chain.from_iterable(('mortality{}'.format(k),
-                                             'prev_alive{}'.format(k),
-                                             'prev_dead{}'.format(k),
-                                             'alive{}'.format(k),
-                                             'dead{}'.format(k),
-                                             'PY{}'.format(k),
-                                             'YLD{}'.format(k),
-                                             'HALY{}'.format(k))
-                                             for k in range(sub_pops)))
-
-    comparison_cols = ['subpop_PY_sum', 'PY_error', 
-                       'subpop_HALY_sum', 'HALY_error']
-
-    output_cols += sub_pop_cols + comparison_cols
-    output_df = pd.DataFrame(columns=output_cols)
-
-    #loop over cohorts
-    for cohort, cohort_df in cohort_data.groupby(['cohort']):
-        if cohort >= cohort_end:
-            break
-
-        row_0 = cohort_df.iloc[0]
-        N = row_0['N']
-
-        age = row_0['age']
-        sex = row_0['sex']
-        start_year = row_0['year']
-        end_year = cohort_df['year'].iloc[-1]
-        years = end_year - start_year + 1
-
-        #sub_pops = row_0['subPops']
-        sub_pop_prop_cols = ['prop{}'.format(k) for k in range(sub_pops)]
-        sub_pop_props = row_0[sub_pop_prop_cols].to_numpy()
-
-        sub_pop_mort_ratio_cols = ['mort_RR{}'.format(k) for k in range(sub_pops)]
-        sub_pop_mort_ratios = cohort_df[sub_pop_mort_ratio_cols].to_numpy()
-        sub_pop_yld_ratio_cols = ['yld_RR{}'.format(k) for k in range(sub_pops)]
-        sub_pop_yld_ratios = cohort_df[sub_pop_yld_ratio_cols].to_numpy()
-
-        init_agg_pop = np.array([N, 0])
-        agg_pop = np.zeros([years+1, 2])
-        agg_pop[0] = init_agg_pop
-        agg_mort_rates = cohort_df['mortality'].to_numpy()
-        agg_YLD_rates = cohort_df['yld'].to_numpy()
-
-        for t in range (0, years):
-            agg_pop[t+1, 0] = population_state_timestep_2state(agg_pop[t, 0], agg_mort_rates[t])
-            agg_pop[t+1, 1] = N - agg_pop[t+1, 0]
-        
-        agg_PY = compute_PYs(agg_pop[:, 0], agg_pop[:, 1])
-        agg_HALY = compute_HALYs(agg_PY, agg_YLD_rates)
-
-        sub_pop_alive, sub_pop_mort = disaggregate_2state(agg_pop[:, 0], 
-                                                        agg_mort_rates,
-                                                        sub_pop_props,
-                                                        sub_pop_mort_ratios,
-                                                        years,
-                                                        np.zeros(years))
-
-        sub_pop_dead = np.array(N*sub_pop_props - sub_pop_alive, dtype=float)
-
-        sub_pop_PY = compute_PYs(sub_pop_alive, sub_pop_dead)
-
-        #disaggregate yld
-        ref_YLD = ((np.sum(sub_pop_PY, axis=1) - agg_HALY)
-                    / np.sum(sub_pop_yld_ratios * sub_pop_PY, axis=1)
-        )
-        sub_pop_YLD =  disaggregate_YLD(agg_HALY, sub_pop_PY, sub_pop_yld_ratios)
-
-        sub_pop_HALY = compute_HALYs(sub_pop_PY, sub_pop_YLD)
-
-        sub_pop_PY_sum = np.sum(sub_pop_PY, axis=1)
-        sub_pop_HALY_sum = np.sum(sub_pop_HALY, axis=1)
-
-        cohort_df = pd.DataFrame()
-        cohort_df['cohort'] = cohort*np.ones(years)
-        cohort_df['age'] = range(age, age +years)
-        cohort_df['year'] = range(start_year, end_year+1)
-        cohort_df['sex'] = [sex for year in range(start_year, end_year+1)]
-        cohort_df['mortality_agg'] = agg_mort_rates
-        cohort_df['prev_alive_agg'] = agg_pop[0:-1, 0]
-        cohort_df['prev_dead_agg'] = agg_pop[0:-1, 1]
-        cohort_df['alive_agg'] = agg_pop[1:, 0]
-        cohort_df['dead_agg'] = agg_pop[1:, 1]
-        cohort_df['PY_agg'] = agg_PY
-        cohort_df['YLD_agg'] = agg_YLD_rates
-        cohort_df['HALY_agg'] = agg_HALY
-        cohort_df['sub_pops'] = sub_pops
-
-        for k in range(sub_pops):
-            cohort_df['mortality{}'.format(k)] = sub_pop_mort[:, k]
-            cohort_df['prev_alive{}'.format(k)] = sub_pop_alive[0:-1, k]
-            cohort_df['prev_dead{}'.format(k)] = sub_pop_dead[0:-1, k]
-            cohort_df['alive{}'.format(k)] = sub_pop_alive[1:, k]
-            cohort_df['dead{}'.format(k)] = sub_pop_dead[1:, k]
-            cohort_df['PY{}'.format(k)] = sub_pop_PY[:, k]
-            cohort_df['YLD{}'.format(k)] = sub_pop_YLD[:, k]
-            cohort_df['HALY{}'.format(k)] = sub_pop_HALY[:, k]
-
-        cohort_df['subpop_PY_sum'] = sub_pop_PY_sum
-        cohort_df['PY_error'] = agg_PY - sub_pop_PY_sum
-        cohort_df['subpop_HALY_sum'] = sub_pop_HALY_sum
-        cohort_df['HALY_error'] = agg_HALY - sub_pop_HALY_sum
-
-        output_df = output_df.append(cohort_df, sort=False)
-
-        #make_mortality_pop_plots(agg_pop, sub_pop_alive, sub_pop_dead, years)
-        #make_PY_plots(agg_PY, sub_pop_PY, years)
-        #make_HALY_plots(agg_HALY, sub_pop_HALY, years)
-                            
-    #plt.show()
-    return output_df
-
-
 def disaggregate_disease(disease_data):
     
     #Used for testing a sample of cohorts
@@ -354,6 +226,7 @@ def get_subpop_rates_2state(agg_pop, agg_rate, sub_pops, rate_ratios):
     if f(0)*f(1) >= 0:
         pdb.set_trace()
     root = optimize.brentq(f,0,1)
+    print(root)
     return -np.log(root)*rate_ratios
 
 def disaggregate_2state(agg_pop, agg_rates, init_sub_pop_props, rate_ratios, timesteps, inflow_offset):
@@ -542,36 +415,188 @@ def make_agg_total_pop_plot(agg_pop, dead_other_causes_agg, years):
                                     labels=('alive','diseased','dead_disease','dead_other'))
 
 
+def disaggregate_cohort_demography(cohort_data):
+    
+    #Used for testing a sample of cohorts
+    cohort_end = cohort_data['cohort'].max() + 1
+    #cohort_end = 3
+
+    #assume each cohort has same number of subpops
+    sub_pops = int(cohort_data.iloc[0]['subPops'])
+
+    output_cols = ['cohort', 'age', 'sex', 'year',
+                   'mortality_agg','prev_alive_agg', 'prev_dead_agg', 
+                   'alive_agg', 'dead_agg', 'PY_agg', 'YLD_agg', 'HALY_agg',
+                   'sub_pops']
+
+    sub_pop_cols = list(chain.from_iterable(('mortality{}'.format(k),
+                                             'prev_alive{}'.format(k),
+                                             'prev_dead{}'.format(k),
+                                             'alive{}'.format(k),
+                                             'dead{}'.format(k),
+                                             'PY{}'.format(k),
+                                             'YLD{}'.format(k),
+                                             'HALY{}'.format(k))
+                                             for k in range(sub_pops)))
+
+    comparison_cols = ['subpop_PY_sum', 'PY_error', 
+                       'subpop_HALY_sum', 'HALY_error']
+
+    output_cols += sub_pop_cols + comparison_cols
+    output_df = pd.DataFrame(columns=output_cols)
+
+    #loop over cohorts
+    for cohort, cohort_df in cohort_data.groupby(['cohort']):
+        if cohort >= cohort_end:
+            break
+
+        row_0 = cohort_df.iloc[0]
+        N = row_0['N']
+
+        age = int(row_0['age'])
+        sex = row_0['sex']
+        start_year = int(row_0['year'])
+        end_year = int(cohort_df['year'].iloc[-1])
+        years = end_year - start_year + 1
+
+        #sub_pops = row_0['subPops']
+        sub_pop_prop_cols = ['prop{}'.format(k) for k in range(sub_pops)]
+        sub_pop_props = row_0[sub_pop_prop_cols].to_numpy()
+
+        sub_pop_mort_ratio_cols = ['mort_RR{}'.format(k) for k in range(sub_pops)]
+        sub_pop_mort_ratios = cohort_df[sub_pop_mort_ratio_cols].to_numpy()
+        sub_pop_yld_ratio_cols = ['yld_RR{}'.format(k) for k in range(sub_pops)]
+        sub_pop_yld_ratios = cohort_df[sub_pop_yld_ratio_cols].to_numpy()
+        
+        init_agg_pop = np.array([N, 0])
+        agg_pop = np.zeros([years+1, 2])
+        agg_pop[0] = init_agg_pop
+        agg_mort_rates = cohort_df['mortality'].to_numpy()
+        agg_YLD_rates = cohort_df['yld'].to_numpy()
+
+        for t in range (0, years):
+            agg_pop[t+1, 0] = population_state_timestep_2state(agg_pop[t, 0], agg_mort_rates[t])
+            agg_pop[t+1, 1] = N - agg_pop[t+1, 0]
+        
+        agg_PY = compute_PYs(agg_pop[:, 0], agg_pop[:, 1])
+        agg_HALY = compute_HALYs(agg_PY, agg_YLD_rates)
+
+        sub_pop_alive, sub_pop_mort = disaggregate_2state(agg_pop[:, 0], 
+                                                        agg_mort_rates,
+                                                        sub_pop_props,
+                                                        sub_pop_mort_ratios,
+                                                        years,
+                                                        np.zeros(years))
+        
+        #print('agg_pop[:, 0]', agg_pop[:, 0])
+        #print('sub_pop_alive', sub_pop_alive)
+        #print('sub_pop_mort', sub_pop_mort)
+        
+        
+        sub_pop_dead = np.array(N*sub_pop_props - sub_pop_alive, dtype=float)
+
+        sub_pop_PY = compute_PYs(sub_pop_alive, sub_pop_dead)
+
+        #disaggregate yld
+        ref_YLD = ((np.sum(sub_pop_PY, axis=1) - agg_HALY)
+                    / np.sum(sub_pop_yld_ratios * sub_pop_PY, axis=1)
+        )
+        sub_pop_YLD =  disaggregate_YLD(agg_HALY, sub_pop_PY, sub_pop_yld_ratios)
+
+        sub_pop_HALY = compute_HALYs(sub_pop_PY, sub_pop_YLD)
+
+        sub_pop_PY_sum = np.sum(sub_pop_PY, axis=1)
+        sub_pop_HALY_sum = np.sum(sub_pop_HALY, axis=1)
+
+        cohort_df = pd.DataFrame()
+        cohort_df['cohort'] = cohort*np.ones(years)
+        cohort_df['age'] = range(age, age + years)
+        cohort_df['year'] = range(start_year, end_year+1)
+        cohort_df['sex'] = [sex for year in range(start_year, end_year+1)]
+        cohort_df['mortality_agg'] = agg_mort_rates
+        cohort_df['prev_alive_agg'] = agg_pop[0:-1, 0]
+        cohort_df['prev_dead_agg'] = agg_pop[0:-1, 1]
+        cohort_df['alive_agg'] = agg_pop[1:, 0]
+        cohort_df['dead_agg'] = agg_pop[1:, 1]
+        cohort_df['PY_agg'] = agg_PY
+        cohort_df['YLD_agg'] = agg_YLD_rates
+        cohort_df['HALY_agg'] = agg_HALY
+        cohort_df['sub_pops'] = sub_pops
+
+        for k in range(sub_pops):
+            cohort_df['mortality{}'.format(k)] = sub_pop_mort[:, k]
+            cohort_df['prev_alive{}'.format(k)] = sub_pop_alive[0:-1, k]
+            cohort_df['prev_dead{}'.format(k)] = sub_pop_dead[0:-1, k]
+            cohort_df['alive{}'.format(k)] = sub_pop_alive[1:, k]
+            cohort_df['dead{}'.format(k)] = sub_pop_dead[1:, k]
+            cohort_df['PY{}'.format(k)] = sub_pop_PY[:, k]
+            cohort_df['YLD{}'.format(k)] = sub_pop_YLD[:, k]
+            cohort_df['HALY{}'.format(k)] = sub_pop_HALY[:, k]
+
+        cohort_df['subpop_PY_sum'] = sub_pop_PY_sum
+        cohort_df['PY_error'] = agg_PY - sub_pop_PY_sum
+        cohort_df['subpop_HALY_sum'] = sub_pop_HALY_sum
+        cohort_df['HALY_error'] = agg_HALY - sub_pop_HALY_sum
+
+        output_df = output_df.append(cohort_df, sort=False)
+
+        #make_mortality_pop_plots(agg_pop, sub_pop_alive, sub_pop_dead, years)
+        #make_PY_plots(agg_PY, sub_pop_PY, years)
+        #make_HALY_plots(agg_HALY, sub_pop_HALY, years)
+                            
+    #plt.show()
+    return output_df
+
+
 def output_disagg_table(output_df, filename):
     output_df.to_csv(filename, index=False)
 
-#populations = ['maori', 'non-maori']
-populations = ['maori']
 
-for folder_name in populations:
-    #############################################################
-    '''Cohort demography data disaggregation'''
-    cohort_filename = './{}/{}_cohort_population_data.csv'.format(folder_name, folder_name)
-    cohort_outfile = './{}/base_population_disaggregation.csv'.format(folder_name)
-    #cohort_filename = './{}/{}_cohort_population_data_naive.csv'.format(folder_name, folder_name)
-    #cohort_outfile = './{}/base_population_disaggregation_naive.csv'.format(folder_name)
-
-    cohort_data = load_cohort_file(cohort_filename)
-    #print(cohort_data)
-
-    demography_df = disaggregate_cohort_demography(cohort_data)
-    output_disagg_table(demography_df, cohort_outfile)
-    ##############################################################
-    '''Cohort disease data disaggregation'''
-    disease_list = ['CHD', 'Stroke']
-
-    for disease in disease_list:
-        disease_filename = './{}/diseases/{}_disease_cohort_data.csv'.format(folder_name, disease)
-        disease_outfile =  './{}/diseases/{}_disease_disaggregation.csv'.format(folder_name, disease)
-        disease_data = load_cohort_file(disease_filename)
-
-        disease_df = disaggregate_disease(disease_data)
-        output_disagg_table(disease_df, disease_outfile)
+def full_test():
+    #populations = ['maori', 'non-maori']
+    populations = ['maori']
+    
+    for folder_name in populations:
+        #############################################################
+        '''Cohort demography data disaggregation'''
+        cohort_filename = './{}/{}_cohort_population_data.csv'.format(folder_name, folder_name)
+        cohort_outfile = './{}/base_population_disaggregation.csv'.format(folder_name)
+        #cohort_filename = './{}/{}_cohort_population_data_naive.csv'.format(folder_name, folder_name)
+        #cohort_outfile = './{}/base_population_disaggregation_naive.csv'.format(folder_name)
+    
+        cohort_data = load_cohort_file(cohort_filename)
+        #print(cohort_data)
+    
+        demography_df = disaggregate_cohort_demography(cohort_data)
+        output_disagg_table(demography_df, cohort_outfile)
+        ##############################################################
+        '''Cohort disease data disaggregation'''
+        disease_list = ['CHD', 'Stroke']
+    
+        for disease in disease_list:
+            disease_filename = './{}/diseases/{}_disease_cohort_data.csv'.format(folder_name, disease)
+            disease_outfile =  './{}/diseases/{}_disease_disaggregation.csv'.format(folder_name, disease)
+            disease_data = load_cohort_file(disease_filename)
+    
+            disease_df = disaggregate_disease(disease_data)
+            output_disagg_table(disease_df, disease_outfile)
     
 
+def base_test():
+    #populations = ['maori', 'non-maori']
+    populations = ['maori']
+    
+    for folder_name in populations:
+        #############################################################
+        '''Cohort demography data disaggregation'''
+        cohort_filename = './{}/{}_cohort_population_data.csv'.format(folder_name, folder_name)
+        cohort_outfile = './{}/base_population_disaggregation.csv'.format(folder_name)
+        #cohort_filename = './{}/{}_cohort_population_data_naive.csv'.format(folder_name, folder_name)
+        #cohort_outfile = './{}/base_population_disaggregation_naive.csv'.format(folder_name)
+    
+        cohort_data = load_cohort_file(cohort_filename)
+    
+        demography_df = disaggregate_cohort_demography(cohort_data)
+        output_disagg_table(demography_df, cohort_outfile)
 
+base_test()
