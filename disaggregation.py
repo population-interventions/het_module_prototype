@@ -552,7 +552,7 @@ for folder_name in populations:
     #############################################################
     '''Cohort demography data disaggregation'''
     cohort_filename = './{}/{}_cohort_population_data.csv'.format(folder_name, folder_name)
-    cohort_outfile = './output/base_population_disaggregation.csv'.format(folder_name)
+    cohort_outfile = './{}/base_population_disaggregation.csv'.format(folder_name)
     #cohort_filename = './{}/{}_cohort_population_data_naive.csv'.format(folder_name, folder_name)
     #cohort_outfile = './{}/base_population_disaggregation_naive.csv'.format(folder_name)
 
@@ -567,7 +567,7 @@ for folder_name in populations:
 
     for disease in disease_list:
         disease_filename = './{}/diseases/{}_disease_cohort_data.csv'.format(folder_name, disease)
-        disease_outfile =  './output/diseases/{}_disease_disaggregation.csv'.format(folder_name, disease)
+        disease_outfile =  './{}/diseases/{}_disease_disaggregation.csv'.format(folder_name, disease)
         disease_data = load_cohort_file(disease_filename)
 
         disease_df = disaggregate_disease(disease_data)
