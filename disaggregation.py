@@ -9,7 +9,7 @@ import pdb, traceback, sys
 def disaggregate_disease(disease_data):
     
     #Used for testing a sample of cohorts
-    cohort_end = cohort_data['cohort'].max() + 1
+    cohort_end = disease_data['cohort'].max() + 1
     #cohort_end = 5
 
     #assume each cohort has same number of subpops
@@ -599,4 +599,4 @@ def base_test():
         demography_df = disaggregate_cohort_demography(cohort_data)
         output_disagg_table(demography_df, cohort_outfile)
 
-base_test()
+full_test()
